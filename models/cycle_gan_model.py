@@ -18,6 +18,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument('--lambda_B', type=float, default=10.0,
                                 help='weight for cycle loss (B -> A -> B)')
             parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
+            parser.add_argument('--lambda_regularization', type=float, default=0.5, help='regularize generators (A -> B and B -> A) to preserve the input image')
 
         return parser
 
@@ -62,6 +63,7 @@ class CycleGANModel(BaseModel):
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan).to(self.device)
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            self.criterionReg = torch.nn.SmoothL1Loss()
             # initialize optimizers
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -106,6 +108,7 @@ class CycleGANModel(BaseModel):
         self.loss_D_B = self.backward_D_basic(self.netD_B, self.real_A, fake_A)
 
     def backward_G(self):
+        lambda_reg = self.opt.lambda_regularization
         lambda_idt = self.opt.lambda_identity
         lambda_A = self.opt.lambda_A
         lambda_B = self.opt.lambda_B
@@ -121,6 +124,15 @@ class CycleGANModel(BaseModel):
             self.loss_idt_A = 0
             self.loss_idt_B = 0
 
+        if lambda_reg > 0:
+            delta = 0.5
+            inv_delta = 1. / delta
+            self.loss_reg_AtoB = self.criterionReg(inv_delta * self.fake_B, inv_delta * self.real_A) * lambda_reg
+            self.loss_reg_BtoA = self.criterionReg(inv_delta * self.fake_A, inv_delta * self.real_B) * lambda_reg
+        else:
+            self.loss_reg_AtoB = 0
+            self.loss_reg_BtoA = 0
+
         # GAN loss D_A(G_A(A))
         self.loss_G_A = self.criterionGAN(self.netD_A(self.fake_B), True)
         # GAN loss D_B(G_B(B))
@@ -130,7 +142,10 @@ class CycleGANModel(BaseModel):
         # Backward cycle loss
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        self.loss_G = (self.loss_G_A + self.loss_G_B + 
+                       self.loss_cycle_A + self.loss_cycle_B + 
+                       self.loss_idt_A + self.loss_idt_B +
+                       self.loss_reg_AtoB + self.loss_reg_BtoA)
         self.loss_G.backward()
 
     def optimize_parameters(self):
